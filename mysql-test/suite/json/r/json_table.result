@@ -1,0 +1,18 @@
+select * from json_table('[{"a": 1, "b": [11,111]}, {"a": 2, "b": [22,222]}]', '$[*]' COLUMNS( a INT PATH '$.a')) as tt;
+a
+1
+2
+create table t1 (id varchar(5), json varchar(1024));
+insert into t1 values ('j1', '[{"a": 1, "b": [11,111]}, {"a": 2, "b": [22,222]}]');
+insert into t1 values ('j2', '[{"a": 3, "b": [11,111]}, {"a": 4, "b": [22,222]}, {"a": 5, "b": [22,222]}]');
+select id, json, a from t1, json_table(t1.json, '$[*]' COLUMNS( a INT PATH '$.a')) as tt;
+id	json	a
+j1	[{"a": 1, "b": [11,111]}, {"a": 2, "b": [22,222]}]	1
+j1	[{"a": 1, "b": [11,111]}, {"a": 2, "b": [22,222]}]	2
+j2	[{"a": 3, "b": [11,111]}, {"a": 4, "b": [22,222]}, {"a": 5, "b": [22,222]}]	3
+j2	[{"a": 3, "b": [11,111]}, {"a": 4, "b": [22,222]}, {"a": 5, "b": [22,222]}]	4
+j2	[{"a": 3, "b": [11,111]}, {"a": 4, "b": [22,222]}, {"a": 5, "b": [22,222]}]	5
+DROP TABLE t1;
+#
+# End of 10.5 tests
+#
