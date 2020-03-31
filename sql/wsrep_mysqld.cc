@@ -2004,6 +2004,27 @@ static void wsrep_RSU_end(THD *thd)
   thd->variables.wsrep_on= 1;
 }
 
+
+static bool global_read_lock_set(THD *thd)
+{
+  MDL_key key;
+  THD *tmp;
+  bool ftwrl1_lock= false, ftwrl2_lock= false;
+  if (thd->global_read_lock.is_acquired()) return true;
+  key.mdl_key_init(MDL_key::BACKUP, "", "");
+  longlong id = thd->mdl_context.get_lock_owner(&key);
+  if(id && (tmp= find_thread_by_id(id)))
+  {
+    ftwrl1_lock= tmp->mdl_context.is_lock_owner(MDL_key::BACKUP, "", "",
+                                                MDL_BACKUP_FTWRL1);
+    ftwrl2_lock= tmp->mdl_context.is_lock_owner(MDL_key::BACKUP, "", "",
+                                                MDL_BACKUP_FTWRL1);
+    mysql_mutex_unlock(&tmp->LOCK_thd_kill); 
+    if (WSREP(tmp)) mysql_mutex_unlock(&tmp->LOCK_thd_data);
+  }
+  return (ftwrl1_lock || ftwrl2_lock);
+}
+
 int wsrep_to_isolation_begin(THD *thd, const char *db_, const char *table_,
                              const TABLE_LIST* table_list,
                              Alter_info* alter_info)
@@ -2028,10 +2049,10 @@ int wsrep_to_isolation_begin(THD *thd, const char *db_, const char *table_,
   DBUG_ASSERT(wsrep_thd_is_local(thd));
   DBUG_ASSERT(thd->wsrep_trx().ws_meta().seqno().is_undefined());
 
-  if (thd->global_read_lock.is_acquired())
+  if (global_read_lock_set(thd))
   {
-    WSREP_DEBUG("Aborting TOI: Global Read-Lock (FTWRL) in place: %s %llu",
-                WSREP_QUERY(thd), thd->thread_id);
+    my_message(ER_UNKNOWN_COM_ERROR,
+               "Aborting TOI: Global Read-Lock (FTWRL) in place.", MYF(0));
     return -1;
   }
 
