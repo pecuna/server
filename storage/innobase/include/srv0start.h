@@ -46,6 +46,8 @@ srv_undo_tablespaces_init(bool create_new_db);
 /****************************************************************//**
 Starts Innobase and creates a new database if database files
 are not found and the user wants.
+@param[in]	trx_sys_init_on_restore	whether initialize trx_sys on
+srv_operation = SRV_OPERATION_RESTORE.
 @return DB_SUCCESS or error code */
 dberr_t
 innobase_start_or_create_for_mysql();

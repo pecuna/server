@@ -71,6 +71,7 @@ Street, Fifth Floor, Boston, MA 02110-1335 USA
 #include <srv0start.h>
 #include "trx0sys.h"
 #include <buf0dblwr.h>
+#include "ha_innodb.h"
 
 #include <list>
 #include <sstream>
@@ -119,6 +120,8 @@ my_bool xtrabackup_decrypt_decompress;
 my_bool xtrabackup_print_param;
 
 my_bool xtrabackup_export;
+
+my_bool xtrabackup_rollback_xa;
 
 longlong xtrabackup_use_memory;
 
@@ -741,6 +744,7 @@ enum options_xtrabackup
   OPT_XTRA_BACKUP,
   OPT_XTRA_PREPARE,
   OPT_XTRA_EXPORT,
+  OPT_XTRA_ROLLBACK_XA,
   OPT_XTRA_PRINT_PARAM,
   OPT_XTRA_USE_MEMORY,
   OPT_XTRA_THROTTLE,
@@ -854,6 +858,10 @@ struct my_option xb_client_options[] =
    0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
   {"export", OPT_XTRA_EXPORT, "create files to import to another database when prepare.",
    (G_PTR*) &xtrabackup_export, (G_PTR*) &xtrabackup_export,
+   0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+  {"rollback-xa", OPT_XTRA_ROLLBACK_XA, "Rollback prepared XA's on --prepare. After preparing target directory with this option "
+   "it can no longer be a base for incremental backup.",
+   (G_PTR*) &xtrabackup_rollback_xa, (G_PTR*) &xtrabackup_rollback_xa,
    0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
   {"print-param", OPT_XTRA_PRINT_PARAM, "print parameter of mysqld needed for copyback.",
    (G_PTR*) &xtrabackup_print_param, (G_PTR*) &xtrabackup_print_param,
@@ -5555,7 +5563,9 @@ static bool xtrabackup_prepare_func(char** argv)
 	}
 
 	srv_operation = xtrabackup_export
-		? SRV_OPERATION_RESTORE_EXPORT : SRV_OPERATION_RESTORE;
+		? SRV_OPERATION_RESTORE_EXPORT :
+			(xtrabackup_rollback_xa
+				? SRV_OPERATION_RESTORE_ROLLBACK_XA : SRV_OPERATION_RESTORE);
 
 	if (innodb_init_param()) {
 		goto error_cleanup;
@@ -5580,6 +5590,51 @@ static bool xtrabackup_prepare_func(char** argv)
 
 	if (innodb_init()) {
 		goto error_cleanup;
+	}
+
+
+	if (xtrabackup_rollback_xa) {
+		/* Please do not merge MDEV-21168 fix in 10.5+ */
+		compile_time_assert(MYSQL_VERSION_ID < 10 * 10000 + 5 * 100);
+		XID*	xid_list = NULL;
+		size_t	xid_list_len;
+		for (xid_list_len = MAX_XID_LIST_SIZE;
+			xid_list == NULL && xid_list_len > MIN_XID_LIST_SIZE;
+			xid_list_len /= 2)
+			xid_list = (XID *)my_malloc(xid_list_len*sizeof(XID), MYF(0));
+		if (!xid_list) {
+			msg("Can't allocate %zu bytes for XID's list", xid_list_len);
+			ok = false;
+			goto error_cleanup;
+		}
+		int got;
+#ifdef UNIV_DEBUG
+		bool old_recv_no_log_write = recv_no_log_write;
+		recv_no_log_write = false;
+#endif // UNIV_DEBUG
+		while ((got= trx_recover_for_mysql(xid_list, xid_list_len)) > 0)
+		{
+			for (int i=0; i < got; i ++)
+			{
+#ifndef DBUG_OFF
+				int rc=
+#endif // !DBUG_OFF
+				innobase_rollback_by_xid(NULL, xid_list + i);
+#ifndef DBUG_OFF
+				if (rc == 0)
+				{
+					char buf[XIDDATASIZE*4+6]; // see xid_to_str
+					DBUG_PRINT("info", ("rollback xid %s",
+						xid_to_str(buf, xid_list + i)));
+				}
+#endif // !DBUG_OFF
+			}
+		}
+		buf_flush_sync_all_buf_pools();
+#ifdef UNIV_DEBUG
+		recv_no_log_write = old_recv_no_log_write;
+#endif // UNIV_DEBUG
+		my_free(xid_list);
 	}
 
 	if (ok) {
